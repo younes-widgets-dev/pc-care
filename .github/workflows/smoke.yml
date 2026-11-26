@@ -51,7 +51,7 @@ jobs:
           Start-Sleep -Seconds 2
           Start-Sleep -Seconds 2
           Write-Host "alive at end:" (-not $p.HasExited)
-          foreach ($f in Get-ChildItem "$env:APPDATA\PCCare" -Filter *.log -ErrorAction SilentlyContinue) { Write-Host "=== $($f.Name)"; Get-Content $f.FullName }
+          foreach ($f in Get-ChildItem "$env:APPDATA\PCCare" -Include *.log,*.txt -Recurse -ErrorAction SilentlyContinue) { Write-Host "=== $($f.Name)"; Get-Content $f.FullName }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
