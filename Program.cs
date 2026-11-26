@@ -475,6 +475,64 @@ namespace PCCare
         };
     }
 
+    // ================= Language key =================
+    static class LangKey
+    {
+        delegate IntPtr HookProc(int n, IntPtr w, IntPtr l);
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetWindowsHookEx(int id, HookProc cb, IntPtr mod, uint tid);
+        [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
+        [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int n, IntPtr w, IntPtr l);
+        [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string n);
+        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+        [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+        static HookProc proc = Cb; static IntPtr hh = IntPtr.Zero; static bool down; static Control sync;
+        public static volatile bool Learning; public static Action<string> LearnDone;
+        public static bool Installed { get { return hh != IntPtr.Zero; } }
+        public static bool On { get { return Cfg.B("kbd.on", true); } }
+        public static int Scan { get { return Cfg.I("kbd.scan", 0x52); } }
+        public static bool Ext { get { return Cfg.B("kbd.ext", false); } }
+        public static string Describe() { return Scan == 0x52 && !Ext ? "Numpad 0 / Ins" : "key with scan code 0x" + Scan.ToString("X") + (Ext ? " (extended)" : ""); }
+        public static void Install(Control c)
+        {
+            sync = c; IntPtr mod = IntPtr.Zero; try { mod = GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName); } catch { }
+            hh = SetWindowsHookEx(13, proc, mod, 0); if (hh == IntPtr.Zero) hh = SetWindowsHookEx(13, proc, IntPtr.Zero, 0);
+        }
+        public static void Remove() { if (hh != IntPtr.Zero) { UnhookWindowsHookEx(hh); hh = IntPtr.Zero; } }
+        public static void Switch()
+        {
+            Log.Add("language key pressed: sending Win+Space");
+            keybd_event(0x5B, 0, 0, UIntPtr.Zero); keybd_event(0x20, 0, 0, UIntPtr.Zero); keybd_event(0x20, 0, 2, UIntPtr.Zero); keybd_event(0x5B, 0, 2, UIntPtr.Zero);
+        }
+        static IntPtr Cb(int n, IntPtr w, IntPtr l)
+        {
+            try
+            {
+                if (n >= 0)
+                {
+                    int msg = (int)w; int vk = Marshal.ReadInt32(l, 0), scan = Marshal.ReadInt32(l, 4), flags = Marshal.ReadInt32(l, 8);
+                    bool injected = (flags & 0x10) != 0 && Environment.GetEnvironmentVariable("PCCARE_TEST") != "1"; bool ext = (flags & 1) != 0; bool isDown = msg == 0x100 || msg == 0x104;
+                    if (!injected)
+                    {
+                        if (Learning && isDown)
+                        {
+                            Learning = false; Cfg.Set("kbd.scan", scan.ToString()); Cfg.Set("kbd.ext", ext); Cfg.Save();
+                            Action<string> d = LearnDone; if (d != null) { string t = Describe(); try { sync.BeginInvoke(new Action(delegate { d(t); })); } catch { } }
+                            return (IntPtr)1;
+                        }
+                        if (On && scan == Scan && ext == Ext)
+                        {
+                            bool mods = (GetAsyncKeyState(0x11) & 0x8000) != 0 || (GetAsyncKeyState(0x12) & 0x8000) != 0 || (GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0;
+                            if (isDown) { if (!mods) { if (!down) { down = true; try { sync.BeginInvoke(new Action(Switch)); } catch { } } return (IntPtr)1; } }
+                            else if (down) { down = false; return (IntPtr)1; }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return CallNextHookEx(hh, n, w, l);
+        }
+    }
+
     // ================= Settings window =================
     class SettingsForm : Form
     {
@@ -485,7 +543,7 @@ namespace PCCare
         {
             Text = "PC Care - automatic cleaning and speed"; Width = 760; Height = 700; StartPosition = FormStartPosition.CenterScreen;
             TabControl tabs = new TabControl(); tabs.Dock = DockStyle.Fill;
-            tabs.TabPages.Add(JobsTab()); tabs.TabPages.Add(TweaksTab()); tabs.TabPages.Add(ToolsTab()); tabs.TabPages.Add(LogTab());
+            tabs.TabPages.Add(JobsTab()); tabs.TabPages.Add(KeyTab()); tabs.TabPages.Add(TweaksTab()); tabs.TabPages.Add(ToolsTab()); tabs.TabPages.Add(LogTab());
             tabs.SelectedIndexChanged += delegate { LoadLog(); };
             Controls.Add(tabs);
             refresh.Interval = 3000; refresh.Tick += delegate { UpdateStatus(); }; refresh.Start();
@@ -534,6 +592,18 @@ namespace PCCare
             ps.Click += delegate { Engine.Paused = !Engine.Paused; ps.Text = Engine.Paused ? "Resume" : "Pause all"; }; tp.Controls.Add(ps);
             CheckBox au = new CheckBox(); au.Text = "Start with Windows"; au.Left = 320; au.Top = y + 5; au.Width = 200; au.Checked = Program.IsAutostart(); au.CheckedChanged += delegate { Program.SetAutostart(au.Checked); }; tp.Controls.Add(au);
             UpdateStatus(); return tp;
+        }
+        TabPage KeyTab()
+        {
+            TabPage tp = new TabPage("Language key"); int y = 10;
+            Label h = new Label(); h.Text = "Press one key to switch the input language (like Win + Space). The key you choose stops doing its normal job while this is on. Default: the numpad 0 / Ins key."; h.Left = 8; h.Top = y; h.Width = 700; h.Height = 44; tp.Controls.Add(h); y += 50;
+            CheckBox on = new CheckBox(); on.Text = "Use a key to switch language"; on.Left = 8; on.Top = y; on.Width = 400; on.Checked = LangKey.On; on.CheckedChanged += delegate { Cfg.Set("kbd.on", on.Checked); Cfg.Save(); }; tp.Controls.Add(on); y += 32;
+            Label cur = new Label(); cur.Left = 8; cur.Top = y; cur.Width = 700; cur.Text = "Current key: " + LangKey.Describe() + (LangKey.Installed ? "   (hook active)" : "   (hook NOT active)"); tp.Controls.Add(cur); y += 32;
+            Button lr = new Button(); lr.Text = "Choose another key..."; lr.Left = 8; lr.Top = y; lr.Width = 200; lr.Height = 30;
+            lr.Click += delegate { LangKey.Learning = true; cur.Text = "Press the key you want now..."; LangKey.LearnDone = delegate (string d) { cur.Text = "Current key: " + d + "   (hook active)"; }; }; tp.Controls.Add(lr);
+            Button ts = new Button(); ts.Text = "Test switch now"; ts.Left = 220; ts.Top = y; ts.Width = 160; ts.Height = 30; ts.Click += delegate { LangKey.Switch(); }; tp.Controls.Add(ts);
+            Button df = new Button(); df.Text = "Back to Numpad 0"; df.Left = 392; df.Top = y; df.Width = 160; df.Height = 30; df.Click += delegate { Cfg.Set("kbd.scan", "82"); Cfg.Set("kbd.ext", false); Cfg.Save(); cur.Text = "Current key: " + LangKey.Describe() + "   (hook active)"; }; tp.Controls.Add(df);
+            return tp;
         }
         TabPage TweaksTab()
         {
@@ -630,9 +700,10 @@ namespace PCCare
             m.Items.Add("Open PC Care", null, delegate { SettingsForm.ShowIt(); });
             m.Items.Add("Run all jobs now", null, delegate { if (Engine.Busy) return; List<Job> l = new List<Job>(); foreach (Job j in Jobs.All) if (Engine.JobOn(j)) l.Add(j); Engine.RunAsync(l, true); });
             ToolStripMenuItem pz = new ToolStripMenuItem("Pause"); pz.Click += delegate { Engine.Paused = !Engine.Paused; pz.Text = Engine.Paused ? "Resume" : "Pause"; }; m.Items.Add(pz);
-            m.Items.Add("Exit", null, delegate { Tray.Visible = false; Cfg.Save(); Application.Exit(); });
+            m.Items.Add("Exit", null, delegate { LangKey.Remove(); Tray.Visible = false; Cfg.Save(); Application.Exit(); });
             Tray.ContextMenuStrip = m; Tray.DoubleClick += delegate { SettingsForm.ShowIt(); };
-            Log.Add("PC Care started");
+            Control kc = new Control(); kc.CreateControl(); IntPtr kh = kc.Handle; LangKey.Install(kc);
+            Log.Add("PC Care started; language key hook " + (LangKey.Installed ? "active" : "NOT installed"));
             if (first) { Tray.ShowBalloonTip(6000, "PC Care is running", "It cleans and speeds up your PC quietly in the background. Open it from the tray icon.", ToolTipIcon.Info); SettingsForm.ShowIt(); }
             tick = new System.Windows.Forms.Timer(); tick.Interval = 60000; tick.Tick += delegate { try { Engine.Tick(); } catch (Exception ex) { Log.Add("ERROR " + ex); } };
             System.Windows.Forms.Timer first1 = new System.Windows.Forms.Timer(); first1.Interval = 45000; first1.Tick += delegate { first1.Stop(); try { Engine.Tick(); } catch { } tick.Start(); }; first1.Start();
