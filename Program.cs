@@ -666,6 +666,11 @@ namespace PCCare
             lr.Click += delegate { LangKey.Learning = true; cur.Text = "Press the key you want now..."; LangKey.LearnDone = delegate (string d) { cur.Text = "Current key: " + d + "   (hook active)"; }; }; tp.Controls.Add(lr);
             Button ts = new Button(); ts.Text = "Test switch now"; ts.Left = 220; ts.Top = y; ts.Width = 160; ts.Height = 30; ts.Click += delegate { LangKey.Switch(); }; tp.Controls.Add(ts);
             Button df = new Button(); df.Text = "Back to Numpad 0"; df.Left = 392; df.Top = y; df.Width = 160; df.Height = 30; df.Click += delegate { Cfg.Set("kbd.scan", "82"); Cfg.Set("kbd.ext", false); Cfg.Save(); cur.Text = "Current key: " + LangKey.Describe() + "   (hook active)"; }; tp.Controls.Add(df);
+            y += 40;
+            Button fx = new Button(); fx.Text = "Fix stuck language bar"; fx.Left = 8; fx.Top = y; fx.Width = 200; fx.Height = 30;
+            fx.Click += delegate { try { foreach (Process px in Process.GetProcessesByName("ctfmon")) { try { px.Kill(); } catch { } px.Dispose(); } Thread.Sleep(800); Process.Start("ctfmon.exe"); Log.Add("restarted the Windows language service (ctfmon)"); } catch (Exception ex) { Log.Add("ctfmon restart error: " + ex.Message); } };
+            tp.Controls.Add(fx);
+            Label fxl = new Label(); fxl.Text = "If Windows stops switching languages at all (even with Win + Space), this restarts the Windows language service. Safe, takes a second."; fxl.Left = 220; fxl.Top = y; fxl.Width = 500; fxl.Height = 40; fxl.ForeColor = Color.DimGray; tp.Controls.Add(fxl);
             return tp;
         }
         TabPage TweaksTab()
