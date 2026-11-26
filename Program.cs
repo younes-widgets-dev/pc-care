@@ -590,7 +590,27 @@ namespace PCCare
         public static NotifyIcon Tray; static System.Windows.Forms.Timer tick;
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         public static bool IsAutostart() { try { using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey)) return k != null && k.GetValue("PCCare") != null; } catch { return false; } }
-        public static void SetAutostart(bool on)
+                static void Approve()
+        {
+            try { using (RegistryKey k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run")) k.SetValue("PCCare", new byte[] { 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, RegistryValueKind.Binary); } catch { }
+        }
+        public static void AutoDiag()
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PCCare"); Directory.CreateDirectory(dir);
+                object run = null, ap = null;
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) { if (k != null) run = k.GetValue("PCCare"); }
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run")) { if (k != null) ap = k.GetValue("PCCare"); }
+                byte[] b = ap as byte[]; string st = b == null ? "none" : BitConverter.ToString(b);
+                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  started; uptime " + ((uint)Environment.TickCount / 60000) + " min; exe=" + Application.ExecutablePath + "; Run=" + (run == null ? "missing" : "present") + "; StartupApproved=" + st + (b != null && b.Length > 0 && (b[0] & 1) == 1 ? " (DISABLED by Windows)" : "") + "\r\n";
+                string f = Path.Combine(dir, "startup.log"); try { if (File.Exists(f) && new FileInfo(f).Length > 50000) File.Delete(f); } catch { }
+                File.AppendAllText(f, line);
+            }
+            catch { }
+        }
+        public static void SetAutostart(bool on) { SetAutostartRaw(on); if (on) Approve(); }
+        static void SetAutostartRaw(bool on)
         {
             try { using (RegistryKey k = Registry.CurrentUser.CreateSubKey(RunKey)) { if (on) k.SetValue("PCCare", "\"" + Application.ExecutablePath + "\""); else k.DeleteValue("PCCare", false); } } catch { }
         }
@@ -603,6 +623,7 @@ namespace PCCare
             bool created; Mutex mx = new Mutex(true, "PCCare_single_instance", out created); if (!created) return;
             Cfg.Load();
             bool first = !Cfg.B("init", false);
+            AutoDiag(); if (!first && IsAutostart()) SetAutostart(true);
             if (first) { SetAutostart(true); Cfg.Set("init", true); Cfg.Save(); }
             Tray = new NotifyIcon(); Tray.Icon = SystemIcons.Shield; Tray.Text = "PC Care (working quietly)"; Tray.Visible = true;
             ContextMenuStrip m = new ContextMenuStrip();
