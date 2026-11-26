@@ -485,7 +485,7 @@ namespace PCCare
         [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string n);
         [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
         [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
-        static HookProc proc = Cb; static IntPtr hh = IntPtr.Zero; static bool down; static Control sync;
+        static HookProc proc = Cb; static IntPtr hh = IntPtr.Zero; static bool down; static Control sync; static DateTime lastTry = DateTime.MinValue; public static int LastErr;
         public static volatile bool Learning; public static Action<string> LearnDone;
         public static bool Installed { get { return hh != IntPtr.Zero; } }
         public static bool On { get { return Cfg.B("kbd.on", true); } }
@@ -495,7 +495,16 @@ namespace PCCare
         public static void Install(Control c)
         {
             sync = c; IntPtr mod = IntPtr.Zero; try { mod = GetModuleHandle(Process.GetCurrentProcess().MainModule.ModuleName); } catch { }
-            hh = SetWindowsHookEx(13, proc, mod, 0); if (hh == IntPtr.Zero) hh = SetWindowsHookEx(13, proc, IntPtr.Zero, 0);
+            hh = SetWindowsHookEx(13, proc, mod, 0);
+            if (hh == IntPtr.Zero) { LastErr = Marshal.GetLastWin32Error(); hh = SetWindowsHookEx(13, proc, IntPtr.Zero, 0); if (hh == IntPtr.Zero) { LastErr = Marshal.GetLastWin32Error(); return; } }
+            LastErr = 0;
+        }
+        public static void Ensure()
+        {
+            if (hh != IntPtr.Zero || sync == null || sync.IsDisposed) return;
+            if ((DateTime.Now - lastTry).TotalSeconds < 30) return;
+            lastTry = DateTime.Now; Install(sync);
+            Log.Add(hh != IntPtr.Zero ? "language key hook re-installed" : "language key hook reinstall FAILED (error " + LastErr + ")");
         }
         public static void Remove() { if (hh != IntPtr.Zero) { UnhookWindowsHookEx(hh); hh = IntPtr.Zero; } }
         public static void Switch()
@@ -530,6 +539,60 @@ namespace PCCare
             }
             catch { }
             return CallNextHookEx(hh, n, w, l);
+        }
+    }
+
+    // ================= Language badge (tray icon shows current input language) =================
+    static class LangBadge
+    {
+        [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint threadId);
+        static Dictionary<string, Icon> cache = new Dictionary<string, Icon>(); static string last;
+        public static string Current()
+        {
+            try
+            {
+                IntPtr fw = N.GetForegroundWindow(); uint pid; uint tid = fw == IntPtr.Zero ? 0 : N.GetWindowThreadProcessId(fw, out pid);
+                IntPtr hkl = tid == 0 ? IntPtr.Zero : GetKeyboardLayout(tid);
+                int lang = (int)((long)hkl & 0xFFFF); if (lang == 0) return last ?? "??";
+                string code; try { code = new System.Globalization.CultureInfo(lang).TwoLetterISOLanguageName.ToUpperInvariant(); } catch { code = "??"; }
+                last = code; return code;
+            }
+            catch { return last ?? "??"; }
+        }
+        public static Icon IconFor(string code)
+        {
+            lock (cache) { Icon ic; if (cache.TryGetValue(code, out ic)) return ic; }
+            int S = 32; Bitmap b = new Bitmap(S, S);
+            using (Graphics g = Graphics.FromImage(b))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                Color bg = code == "EN" ? Color.FromArgb(37, 99, 235) : code == "AR" ? Color.FromArgb(5, 150, 105) : Color.FromArgb(100, 100, 100);
+                System.Drawing.Drawing2D.GraphicsPath gp = new System.Drawing.Drawing2D.GraphicsPath(); int r = 9;
+                gp.AddArc(1, 1, r, r, 180, 90); gp.AddArc(S - r - 1, 1, r, r, 270, 90); gp.AddArc(S - r - 1, S - r - 1, r, r, 0, 90); gp.AddArc(1, S - r - 1, r, r, 90, 90); gp.CloseFigure();
+                using (SolidBrush br = new SolidBrush(bg)) g.FillPath(br, gp);
+                using (Font f = new Font("Segoe UI", 13f, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                using (SolidBrush wh = new SolidBrush(Color.White)) g.DrawString(code, f, wh, new RectangleF(0, 1, S, S), sf);
+            }
+            Icon icon = Icon.FromHandle(b.GetHicon()); b.Dispose();
+            lock (cache) cache[code] = icon;
+            return icon;
+        }
+    }
+
+    // ================= Tray guard (restore icon after Explorer restarts) =================
+    class TrayGuard : NativeWindow
+    {
+        static int msg;
+        [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern int RegisterWindowMessage(string s);
+        public static void Install() { msg = RegisterWindowMessage("TaskbarCreated"); new TrayGuard().CreateHandle(new CreateParams()); }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == msg && Program.Tray != null)
+            {
+                try { Program.Tray.Visible = false; Program.Tray.Visible = true; Program.RefreshLang(); LangKey.Ensure(); Log.Add("taskbar restarted: tray icon restored"); } catch { }
+            }
+            base.WndProc(ref m);
         }
     }
 
@@ -596,7 +659,7 @@ namespace PCCare
         TabPage KeyTab()
         {
             TabPage tp = new TabPage("Language key"); int y = 10;
-            Label h = new Label(); h.Text = "Press one key to switch the input language (like Win + Space). The key you choose stops doing its normal job while this is on. Default: the numpad 0 / Ins key."; h.Left = 8; h.Top = y; h.Width = 700; h.Height = 44; tp.Controls.Add(h); y += 50;
+            Label h = new Label(); h.Text = "Press one key to switch the input language (like Win + Space). The key you choose stops doing its normal job while this is on. Default: the numpad 0 / Ins key. The tray icon always shows the current language (EN/AR)."; h.Left = 8; h.Top = y; h.Width = 700; h.Height = 44; tp.Controls.Add(h); y += 50;
             CheckBox on = new CheckBox(); on.Text = "Use a key to switch language"; on.Left = 8; on.Top = y; on.Width = 400; on.Checked = LangKey.On; on.CheckedChanged += delegate { Cfg.Set("kbd.on", on.Checked); Cfg.Save(); }; tp.Controls.Add(on); y += 32;
             Label cur = new Label(); cur.Left = 8; cur.Top = y; cur.Width = 700; cur.Text = "Current key: " + LangKey.Describe() + (LangKey.Installed ? "   (hook active)" : "   (hook NOT active)"); tp.Controls.Add(cur); y += 32;
             Button lr = new Button(); lr.Text = "Choose another key..."; lr.Left = 8; lr.Top = y; lr.Width = 200; lr.Height = 30;
@@ -657,8 +720,20 @@ namespace PCCare
     // ================= Program =================
     static class Program
     {
-        public static NotifyIcon Tray; static System.Windows.Forms.Timer tick;
+        public static NotifyIcon Tray; static System.Windows.Forms.Timer tick; static System.Windows.Forms.Timer langT; static ToolStripMenuItem langItem; static string curLang = "";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        public static void RefreshLang()
+        {
+            try
+            {
+                string code = LangBadge.Current();
+                if (code == curLang) return;
+                curLang = code;
+                if (Tray != null) { Tray.Icon = LangBadge.IconFor(code); Tray.Text = "PC Care - language: " + code; }
+                if (langItem != null) langItem.Text = "Language now: " + code;
+            }
+            catch { }
+        }
         public static bool IsAutostart() { try { using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey)) return k != null && k.GetValue("PCCare") != null; } catch { return false; } }
                 static void Approve()
         {
@@ -697,15 +772,19 @@ namespace PCCare
             if (first) { SetAutostart(true); Cfg.Set("init", true); Cfg.Save(); }
             Tray = new NotifyIcon(); Tray.Icon = SystemIcons.Shield; Tray.Text = "PC Care (working quietly)"; Tray.Visible = true;
             ContextMenuStrip m = new ContextMenuStrip();
+            langItem = new ToolStripMenuItem("Language now: --"); langItem.Enabled = false; m.Items.Add(langItem);
+            m.Items.Add("Switch language now", null, delegate { LangKey.Switch(); });
             m.Items.Add("Open PC Care", null, delegate { SettingsForm.ShowIt(); });
             m.Items.Add("Run all jobs now", null, delegate { if (Engine.Busy) return; List<Job> l = new List<Job>(); foreach (Job j in Jobs.All) if (Engine.JobOn(j)) l.Add(j); Engine.RunAsync(l, true); });
             ToolStripMenuItem pz = new ToolStripMenuItem("Pause"); pz.Click += delegate { Engine.Paused = !Engine.Paused; pz.Text = Engine.Paused ? "Resume" : "Pause"; }; m.Items.Add(pz);
             m.Items.Add("Exit", null, delegate { LangKey.Remove(); Tray.Visible = false; Cfg.Save(); Application.Exit(); });
             Tray.ContextMenuStrip = m; Tray.DoubleClick += delegate { SettingsForm.ShowIt(); };
+            try { TrayGuard.Install(); } catch { }
+            langT = new System.Windows.Forms.Timer(); langT.Interval = 1500; langT.Tick += delegate { RefreshLang(); try { LangKey.Ensure(); } catch { } }; langT.Start(); RefreshLang();
             Control kc = new Control(); kc.CreateControl(); IntPtr kh = kc.Handle; LangKey.Install(kc);
-            Log.Add("PC Care started; language key hook " + (LangKey.Installed ? "active" : "NOT installed"));
+            Log.Add("PC Care started; language key hook " + (LangKey.Installed ? "active" : "NOT installed (error " + LangKey.LastErr + ")"));
             if (first) { Tray.ShowBalloonTip(6000, "PC Care is running", "It cleans and speeds up your PC quietly in the background. Open it from the tray icon.", ToolTipIcon.Info); SettingsForm.ShowIt(); }
-            tick = new System.Windows.Forms.Timer(); tick.Interval = 60000; tick.Tick += delegate { try { Engine.Tick(); } catch (Exception ex) { Log.Add("ERROR " + ex); } };
+            tick = new System.Windows.Forms.Timer(); tick.Interval = 60000; tick.Tick += delegate { try { LangKey.Ensure(); } catch { } try { Engine.Tick(); } catch (Exception ex) { Log.Add("ERROR " + ex); } };
             System.Windows.Forms.Timer first1 = new System.Windows.Forms.Timer(); first1.Interval = 45000; first1.Tick += delegate { first1.Stop(); try { Engine.Tick(); } catch { } tick.Start(); }; first1.Start();
             Application.Run();
             GC.KeepAlive(mx);
