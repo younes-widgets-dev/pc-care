@@ -41,6 +41,9 @@ jobs:
           $p = Start-Process out\PCCare.exe -PassThru
           Start-Sleep -Seconds 10
           Shot s1_start
+          (New-Object -ComObject Shell.Application).MinimizeAll()
+          Start-Sleep -Seconds 3
+          Shot s1b_desktop
           Write-Host "alive after 10s:" (-not $p.HasExited)
           Start-Sleep -Seconds 70
           Shot s2_after70
