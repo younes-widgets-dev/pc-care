@@ -51,6 +51,16 @@ jobs:
           Start-Sleep -Seconds 2
           Start-Sleep -Seconds 2
           Write-Host "alive at end:" (-not $p.HasExited)
+          LClick 802 738
+          Start-Sleep -Seconds 2
+          Shot s3_overflow
+          Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 12
+          Shot s4_explorer_restarted
+          LClick 802 738
+          Start-Sleep -Seconds 2
+          Shot s5_overflow_after_explorer_restart
+          Write-Host "alive after explorer restart:" (-not $p.HasExited)
           foreach ($f in Get-ChildItem "$env:APPDATA\PCCare" -Include *.log,*.txt -Recurse -ErrorAction SilentlyContinue) { Write-Host "=== $($f.Name)"; Get-Content $f.FullName }
       - uses: actions/upload-artifact@v4
         if: always()
